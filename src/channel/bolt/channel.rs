@@ -33,8 +33,9 @@ use secp256k1::ecdsa::Signature;
 use secp256k1::Secp256k1;
 use strict_encoding::StrictDecode;
 use wallet::lex_order::LexOrder;
-use wallet::psbt;
-use wallet::psbt::Psbt;
+use wallet::psbt::{
+    Psbt, {self},
+};
 
 use super::keyset::{LocalKeyset, LocalPubkey, RemoteKeyset};
 use super::policy::{CommonParams, PeerParams, Policy};
@@ -293,12 +294,15 @@ impl Channel<BoltExt> {
         cltv_expiry: u32,
         route: Vec<Hop<PaymentOnion>>,
     ) -> Result<Messages, Error> {
-        self.constructor_mut().compose_add_update_htlc(
+        let mut message = self.constructor_mut().compose_add_update_htlc(
             amount_msat,
             payment_hash,
             cltv_expiry,
-            route,
-        )
+            route.clone(),
+        )?;
+
+        self.state_change(&UpdateReq::PayBolt(route), &mut message)?;
+        Ok(message)
     }
 
     #[inline]
@@ -904,7 +908,7 @@ impl BoltChannel {
         let secp = Secp256k1::new();
         let onion_packet =
             OnionPacket::with(&secp, &route, payment_hash.as_ref())?;
-        let mut message = Messages::UpdateAddHtlc(UpdateAddHtlc {
+        let message = Messages::UpdateAddHtlc(UpdateAddHtlc {
             channel_id: self.try_channel_id()?,
             htlc_id: 0,
             amount_msat,
@@ -913,11 +917,10 @@ impl BoltChannel {
             onion_routing_packet: Onion::Onion(onion_packet),
             unknown_tlvs: none!(),
         });
-        self.state_change(&UpdateReq::PayBolt(route), &mut message)?;
         Ok(message)
     }
 
-    fn next_per_commitment_point(&mut self) -> PublicKey {
+    pub fn next_per_commitment_point(&mut self) -> PublicKey {
         // TODO: Implement per commitment point switching
         self.local_per_commitment_point
     }
