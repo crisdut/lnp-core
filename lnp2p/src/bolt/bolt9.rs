@@ -547,6 +547,13 @@ impl InitFeatures {
         }
         map
     }
+
+    pub fn new() -> InitFeatures {
+        InitFeatures {
+            option_data_loss_protect: Some(true),
+            ..Default::default()
+        }
+    }
 }
 
 impl TryFrom<FlagVec> for InitFeatures {
