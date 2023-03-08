@@ -223,6 +223,16 @@ where
         Ok(tx_graph.render_cmt())
     }
 
+    /// Constructs htlcs and commitment transaction
+    pub fn cmt_htlcs_txs(
+        &mut self,
+        remote: bool,
+    ) -> Result<Vec<Psbt>, <N as extension::Nomenclature>::Error> {
+        let mut tx_graph = TxGraph::from_funding(&self.funding);
+        self.build_graph(&mut tx_graph, remote)?;
+        Ok(tx_graph.render_cmt_htlcs())
+    }
+
     #[inline]
     pub fn set_funding_amount(&mut self, amount: u64) {
         self.funding = Funding::preliminary(amount)
@@ -320,7 +330,7 @@ where
         for extension in self.extenders.values_mut() {
             extension.state_change(request, message)?;
         }
-        for extension in self.extenders.values_mut() {
+        for extension in self.modifiers.values_mut() {
             extension.state_change(request, message)?;
         }
         Ok(())

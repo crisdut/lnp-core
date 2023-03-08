@@ -15,10 +15,12 @@
 //! not by the final LN node implementations.
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
-use bitcoin::{Transaction, TxIn, TxOut};
+use bitcoin::{OutPoint, Transaction, TxIn, TxOut};
 use wallet::psbt::{self, Psbt, PsbtVersion};
 
+use super::bolt::TxType;
 use crate::channel::Funding;
 
 pub trait TxRole: Clone + From<u16> + Into<u16> {}
@@ -113,8 +115,42 @@ where
     pub fn render(&self) -> Vec<Psbt> {
         let mut txes = Vec::with_capacity(self.len());
         let cmt_tx = self.render_cmt();
-        txes.push(cmt_tx);
+        txes.push(cmt_tx.clone());
         txes.extend(self.graph.values().flat_map(|v| v.values().cloned()));
+        txes
+    }
+
+    pub fn render_cmt_htlcs(&self) -> Vec<Psbt> {
+        let mut txes = Vec::with_capacity(self.len());
+        let cmt_tx = self.render_cmt();
+        txes.push(cmt_tx.clone());
+
+        let txid = cmt_tx.to_txid();
+        for (index, _) in cmt_tx.outputs.clone().into_iter().enumerate() {
+            let htlc_index = index + 1;
+            if let Some(psbt) = self.tx(TxType::HtlcTimeout, htlc_index as u64)
+            {
+                let mut psbt = psbt.to_owned();
+                let prev =
+                    OutPoint::from_str(format!("{}:{}", txid, index).as_str())
+                        .expect("");
+                psbt.inputs[0].previous_outpoint = prev;
+                txes.push(psbt.to_owned());
+            }
+        }
+
+        for (index, _) in cmt_tx.outputs.clone().into_iter().enumerate() {
+            let htlc_index = index + 1;
+            if let Some(psbt) = self.tx(TxType::HtlcSuccess, htlc_index as u64)
+            {
+                let mut psbt = psbt.to_owned();
+                let prev =
+                    OutPoint::from_str(format!("{}:{}", txid, index).as_str())
+                        .expect("");
+                psbt.inputs[0].previous_outpoint = prev;
+                txes.push(psbt.to_owned());
+            }
+        }
         txes
     }
 

@@ -63,6 +63,7 @@ pub struct Htlc {
     /// `channel_type`. Indicates that HTLC transactions will use zero fees and
     /// will be pushed through an anchor transaction.
     anchors_zero_fee_htlc_tx: bool,
+    feerate_per_kw: u32,
 
     // Sets of HTLC informations
     offered_htlcs: BTreeMap<u64, HtlcSecret>,
@@ -108,6 +109,7 @@ impl Default for Htlc {
             max_accepted_htlcs: 0,
             next_recieved_htlc_id: 0,
             next_offered_htlc_id: 0,
+            feerate_per_kw: 0,
         }
     }
 }
@@ -121,13 +123,20 @@ impl Htlc {
     ) -> u64 {
         let htlc_id = self.next_offered_htlc_id;
         self.next_offered_htlc_id += 1;
-        self.offered_htlcs.insert(htlc_id, HtlcSecret {
-            amount: amount_msat,
-            hashlock: payment_hash,
-            id: htlc_id,
-            cltv_expiry,
-        });
+        self.offered_htlcs.insert(
+            htlc_id,
+            HtlcSecret {
+                amount: amount_msat,
+                hashlock: payment_hash,
+                id: htlc_id,
+                cltv_expiry,
+            },
+        );
         htlc_id
+    }
+
+    fn commitment_fee(&self) -> u64 {
+        724 * self.feerate_per_kw as u64 / 1000
     }
 }
 
@@ -182,6 +191,7 @@ impl Extension<BoltExt> for Htlc {
                 self.local_delayed_basepoint =
                     open_channel.delayed_payment_basepoint;
                 self.to_self_delay = open_channel.to_self_delay;
+                self.feerate_per_kw = open_channel.feerate_per_kw;
             }
             Messages::AcceptChannel(accept_channel) => {
                 self.anchors_zero_fee_htlc_tx = accept_channel
@@ -241,7 +251,6 @@ impl Extension<BoltExt> for Htlc {
                             cltv_expiry: message.cltv_expiry,
                         };
                         self.received_htlcs.insert(htlc.id, htlc);
-
                         self.next_recieved_htlc_id += 1;
                     }
                 } else {
@@ -323,6 +332,7 @@ impl Extension<BoltExt> for Htlc {
 
         self.next_recieved_htlc_id = state.last_recieved_htlc_id;
         self.next_offered_htlc_id = state.last_offered_htlc_id;
+        self.feerate_per_kw = state.common_params.feerate_per_kw;
     }
 
     fn store_state(&self, state: &mut ChannelState) {
@@ -348,8 +358,9 @@ impl ChannelExtension<BoltExt> for Htlc {
         tx_graph: &mut TxGraph,
         _as_remote_node: bool,
     ) -> Result<(), Error> {
-        // Process offered HTLCs
         let mut accumulate = 0;
+
+        // Process offered HTLCs
         for (index, offered) in self.offered_htlcs.iter() {
             let htlc_output: Output = ScriptGenerators::ln_offered_htlc(
                 offered.amount / 1000,
@@ -370,9 +381,10 @@ impl ChannelExtension<BoltExt> for Htlc {
                 }
                 _ => tx_graph.cmt_outs.push(htlc_output),
             };
-
+            // Add commitment fee
+            let fee = self.commitment_fee();
             let htlc_tx = Psbt::ln_htlc(
-                offered.amount,
+                offered.amount / 1000 - fee,
                 // TODO: do a two-staged graph generation process
                 OutPoint::default(),
                 offered.cltv_expiry,
@@ -414,9 +426,10 @@ impl ChannelExtension<BoltExt> for Htlc {
                 }
                 _ => tx_graph.cmt_outs.push(htlc_output),
             };
-
+            // Add commitment fee
+            let fee = self.commitment_fee();
             let htlc_tx = Psbt::ln_htlc(
-                recieved.amount,
+                recieved.amount / 1000 - fee,
                 // TODO: do a two-staged graph generation process
                 OutPoint::default(),
                 recieved.cltv_expiry,
@@ -433,6 +446,13 @@ impl ChannelExtension<BoltExt> for Htlc {
             );
 
             accumulate += recieved.amount / 1000;
+        }
+
+        if accumulate > 0 {
+            let mut cmt = tx_graph.cmt_outs.remove(0);
+            cmt.amount -= accumulate;
+
+            tx_graph.cmt_outs.insert(tx_graph.cmt_outs.len() - 1, cmt);
         }
 
         // Subtracts from the total amount of the commitment transaction
